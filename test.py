@@ -1,143 +1,107 @@
 #!/usr/bin/python
+#-*- coding: utf8 -*-
 import os
+import sys
+from os.path import expanduser
+import sqlite3
+import json
+from StringIO import StringIO
+from Crypto.PublicKey import RSA
+
+homePath = expanduser("~")
 booksPath = "books"
+downloadPath = 'download'
 deDrmOutputPath = "deDrmBooks"
+dbPath = homePath + "/Library/Application Support/Readmoo/Local Storage/" + "app_readmoo_0.localstorage"
+epubPathDownload = None
+rsaPrivateKey = None
+userId = None
+userToken = None
+userBooksLibraryData = None
+currentBooksInLibrary = {}
+toDecryptLocations = {}
+clientId = '8bb43bdd60795d800b16eec7b73abb80'
+epubDownloadUrl = 'https://api.readmoo.com/epub/'
 
-def sqliteTest():
-	import sqlite3
+def getEpubUrl(bookId):
+	return epubDownloadUrl + bookId + '?client_id='+ clientId + '&access_token=' +userToken
 
-	#read db to key/value
-	result = {}
-	conn = sqlite3.connect('app_readmoo_0.localstorage')
-	cursor = conn.execute('SELECT * FROM ItemTable')
-	for row in cursor:
-		result[row[0]] = row[1]
-	conn.close()
+def downloadEpub(bookId):
+	import urllib2
 
-	#print result	
-	for item in result:
-		print item, ": ", result[item]
+	url = getEpubUrl(bookId)
+	downloadToPath = os.path.join(downloadPath, userId)
+	downloadToFileName = bookId + '.epub'
+	outputFile = os.path.join(downloadToPath, downloadToFileName)
+	if os.path.exists(outputFile):
+		print outputFile, ' is exists. return.'
+		return
 
-def Base64Decoder(inputString):
-	import struct
-	import binascii
-	mapping = ('A', 'B', 'C', 'D', 'E', 'F', 'G', 'H',
-		'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q',
-		'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 
-		'a', 'b', 'c','d', 'e', 'f', 'g', 'h', 'i', 
-		'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 
-		's', 't', 'u', 'v', 'w', 'x', 'y', 'z', 
-		'0', '1', '2', '3', '4', '5', '6', '7', '8', 
-		'9', '+', '/')
-	equalSymbleCounts = inputString.count('=')
-	print 'decode string size: ', ((len(inputString) - equalSymbleCounts)*6 - equalSymbleCounts*2)/8, " bytess"
-	mappingResult = []
-	groupResult = []
-	for char in inputString:
-		if char != '=':
-			mappingResult.append(mapping.index(char))
-	print "mapping result list size: ", len(mappingResult)
-	for i in range(0, len(mappingResult)-3, 4) :
-		result = 0
-		a = mappingResult[i]
-		b = mappingResult[i+1]
-		c = mappingResult[i+2]
-		d = mappingResult[i+3]
-		result = result|(a<<(24-6))
-		result = result|(b<<(24-12))
-		result = result|(c<<(24-18))
-		result = result|d
-		groupResult.append(result)
-		print "[", bin(a), bin(b), bin(c), bin(d), "] ", bin(result)
+	print 'open link: ', url
+	response = urllib2.urlopen(url)
 
-def getAllFiles():
-	booksImagesPath = "OEBPS/Images"
-	booksStylePath = "OEBPS/Styles"
-	booksTextPath = "OEBPS/Text"
-	files = []
-	for r, d, f in os.walk(booksPath):
-		for file in f:
-			if (r.find(booksImagesPath) >= 0 or r.find(booksStylePath)>=0 or r.find(booksTextPath)>=0):
-				files.append(os.path.join(r, file))
-	return files
+	#check folder
+	if not os.path.exists(downloadToPath):
+		os.makedirs(downloadToPath)
+	
+	print 'create file: ', outputFile
+	file = open(outputFile, 'wb')
+	print 'downloading...'
+	file.write(response.read())
+	print 'downloading finished.'
+	
 
-def checkAllFolderExist(files):
-	print 'checking output folders...'
-	for file in files:
-		outputPath = file.replace(booksPath, deDrmOutputPath, 1)
-		dirname = os.path.dirname(outputPath)
-		isExist = os.path.exists(dirname)
-		print dirname, " is existes: ", isExist
-		if not isExist:
-			os.makedirs(dirname)
+def extractEpub(bookId):
+	import zipfile
+
+	epubFile = os.path.join(downloadPath, userId, bookId + '.epub')
+	toPath = os.path.join(os.path.dirname(epubFile), bookId)
+	if not os.path.exists(toPath):
+		os.makedirs(toPath)
+	zf = zipfile.ZipFile(epubFile, mode='r')
+	print 'extract epub file...'
+	zf.extractall(toPath)
+	zf.close()
 
 
-
-def fileTest():
-
-	encryptionFilePath = "META-INF/encryption.xml"
-	booksImagesPath = "OEBPS/Images"
-	booksStylePath = "OEBPS/Styles"
-	booksTextPath = "OEBPS/Text"
-	booksRoot = []
-	files = []
-	folders = []
-	for r, d, f in os.walk(booksPath):
-		for file in f:
-			files.append(os.path.join(r, file))
-		for folder in d:
-			folders.append(os.path.join(r, folder))
-
-	for file in files:
-		print(file)
-
-
-def DecryptBooks():
-	import Crypto
-	import base64
+def decryptAESKey(privateKey, cipherText):
 	from Crypto.Cipher import PKCS1_v1_5
 	from Crypto.PublicKey import RSA
-	from Crypto.Cipher import AES
 	from Crypto import Random
 	from Crypto.Hash import SHA
+	import base64
 
-	pvkPem = """-----BEGIN RSA PRIVATE KEY-----
-MIICXAIBAAKBgQCUbnsB/meoYiE7ZhXYBLi2EAI3SFCrTcoFE2MYmBv0ZP8QcVtk
-qLS/2RW5ZRcpYl4gacf4xKgg7/VZDCaYGpEoIPWGKRfDKl7b7Pd/RuRxYua587KC
-8PXfwgGuswpoN2cFgO/4plK6AUa190j46ZFXOV2tR8VahajF7+2CpYyghwIDAQAB
-AoGAcKrT8BV99VBXTVEV75zV4EySgggAQ6eOWv/2TmrXfVFUUtTYvLVaTe2oEcvs
-Itup+wyQYAJWZHoAUBFrEjXIS/I+yI+4AX8HJPvI5/dclQ1VkxO5YwHlWf4CLk+r
-w19sR7WCM7AQcZMac7Kw6fxTGayj1MbR9SU6//s44NcoYsECQQDruAPxv+hfAS9r
-X92bmsxXJJDsLrknJKXip9+T7xW98zk3FGxaWPN5tRpTXQ+esphetUgqIZyg8loQ
-nUk3QmCXAkEAoTPcUpLapR3SCZMVZ4qBKt5pFPRCMPGy5HcWxvPy5OfT0DFmbhqu
-imOD1rNUxLcBy+a1HUaOO+h3be3cU53NkQJABqdpJRffvV7RMdzA6rWR8xvLI3+m
-Jl64eA95Fjn3iScmhFGFRX+hT9w25AeKe1ZbSsEfSmEshLaSqEloWbD7/QJAaTHd
-kekRU3TNTsAz1JiWx/HRowHue+AN/HcWXwhstiHuoErMbAdvZRGhxCbMp35BZt0L
-zanwQXnnDc6N2+b7cQJBANP2MDAP9ewAJ5cpu/HLQ8zI0HAtwIEk+WdTAK1CSB/3
-LNMDjn/fC4zTOimkc66WPB3lfhHBE98JAuhzJiWK5Hc=
------END RSA PRIVATE KEY-----"""
-	encryptDataBase64 = "jphU5T4jjnu48N2kvKB4xmGZZZZw9VJexNMteLUeD8yIaILm9j51F6T3dMH6S4q/fu723U9U7gwcz5/s/ai2tOc200WgOU/7ef+LDR9AY1ti6/dnaAd2gloINQRqp7a3NYWHkBfSrk0dLVyN8cvxoNwwD960/SBtoCH6MwqlT1w="
-	encryptData = base64.b64decode(encryptDataBase64)
-	print "cypher: ", encryptData.encode('hex')
+	cipherText = base64.b64decode(cipherText)
 	dsize = SHA.digest_size
 	sentinel = Random.new().read(15+dsize)
-	key = RSA.importKey(pvkPem)
+	key = RSA.importKey(privateKey)
 	rsaCipher = PKCS1_v1_5.new(key)
-	decryptPvKey = rsaCipher.decrypt(encryptData, sentinel)
-	print "private key: ", decryptPvKey.encode('hex')
-	#get all files
-	encryptedFiles = getAllFiles()
-	checkAllFolderExist(encryptedFiles)
+	decryptPvKey = rsaCipher.decrypt(cipherText, sentinel)
+	return decryptPvKey
+
+def decryptFiles(aesKey, bookId, encryptedFiles, outputRootPath):
+	from Crypto.Cipher import AES
+
+	rootPath = os.path.join(epubPathDownload, bookId)
+	outputBookPath = outputRootPath + "/" + bookId
+	print 'aes key ', aesKey.encode('hex')
+	print 'input path ', rootPath
+	print 'out path ', outputBookPath
+
 	for file in encryptedFiles:
-		outputPath = file.replace(booksPath, deDrmOutputPath, 1)
-		fileName = os.path.basename(file)
-		print "read in file: ", file
-		f = open(file, 'r')
+		filePath = rootPath + "/" + file
+		outputFile = outputBookPath + "/" + file
+		fileName = os.path.basename(filePath)
+		dirName = os.path.dirname(outputFile)
+		if not os.path.exists(dirName):
+			os.makedirs(dirName)
+
+		f = open(filePath, 'r')
 		inputBytes = f.read()
 		iv = inputBytes[:16]
 		cipherText = inputBytes[16:]
-		aesCipher = AES.new(decryptPvKey, AES.MODE_CBC, iv)
-		print "decrypting"
+		aesCipher = AES.new(aesKey, AES.MODE_CBC, iv)
+		print "decrypting file: ", fileName
 		decryptBytes = aesCipher.decrypt(cipherText)
 		decryptBytesLen = len(decryptBytes)
 		#remove padding
@@ -152,72 +116,131 @@ LNMDjn/fC4zTOimkc66WPB3lfhHBE98JAuhzJiWK5Hc=
 				break;
 		print "padding: ", lastByte.encode('hex'), "  padding length: ", paddingLength
 
-		print "write out to file: ", outputPath
-		f = open(outputPath, 'w')
+
+		print 'add new file: ', outputFile
+		f = open(outputFile, 'w')
 		f.write(decryptBytes[:decryptBytesLen-paddingLength])
 		print "decrypt ", file, " is finished."
 
+def checkOtherFiles(bookId, outputRootPath):
+	rootPath = os.path.join(epubPathDownload, bookId)
+	outPath = outputRootPath + "/" + bookId
 
+	for r, d, f in os.walk(rootPath):
+		for name in d:
+			outputDir = os.path.join(r, name)
+			outputDir = os.path.relpath(outputDir, rootPath)
+			outputDir = os.path.join(outPath, outputDir)
+			if not os.path.exists(outputDir):
+				#create folder
+				print "create folder: ", outputDir
+				os.makedirs(outputDir)
+		for name in f:
+			basename = os.path.basename(name)
+			if basename != 'encryption.xml':
+				outputFile = os.path.join(r, name)
+				outputFile = os.path.relpath(outputFile, rootPath)
+				outputFile = os.path.join(outPath, outputFile)
+				if not os.path.exists(outputFile):
+					#copy file
+					srcFile = os.path.join(r, name)
+					file = open(srcFile, 'r')
+					inputData = file.read()
+					print "create file: ", outputFile
+					file = open(outputFile, 'w')
+					file.write(inputData)
 
-	# #read file to decrypt by aes
-	# fileInput = "Cover.jpg"
-	# subName = fileInput[fileInput.index('.')+1:]
-	# fileOutput = fileInput[:fileInput.index('.')] + "_d." + subName
-	# f = open(fileInput, 'r')
-	# decryptSample = f.read()
-	# # print "input file: ", decryptSample.encode('hex')
-	# print "first 16 bytes: ", decryptSample[:16].encode('hex')
-	# print "aes block size: ", AES.block_size
-	# iv = decryptSample[:16]
-	# cipherText = decryptSample[16:]
-	# aesCipher = AES.new(decryptPvKey, AES.MODE_CBC, iv)
-	# msg = aesCipher.decrypt(cipherText)
-	# f = open(fileOutput, 'w')
-	# f.write(msg)
-	# print "decrypt msg len: ", len(msg)
+def outputDecryptedEpubFile(bookId, outputPath):
+	import zipfile
+	outputZipFilePath = outputPath + "/" + bookId + ".epub"
+	booksPath = outputPath + "/" + bookId
+	print 'create zip file: ', outputZipFilePath 
+	zf = zipfile.ZipFile(outputZipFilePath, mode='w')
+	for r, d, f in os.walk(booksPath):
+		for name in f:
+			filePath = os.path.join(r, name)
+			zipFilePath = os.path.relpath(filePath, booksPath)
+			file = open(filePath, 'r')
+			fileByte = file.read()
+			zf.writestr(zipFilePath, fileByte)
 
-def EncryptTest():
-	import Crypto
-	from Crypto.PublicKey import RSA
+	print zf.printdir()
+	zf.close()
 
-	text = "Can you see me?"
-	f = open("testkey.pem", 'r')
-	key = RSA.importKey(f.read())
-	encryptedText = key.encrypt(text, 32)
-	encryptedTextBytes = str(encryptedText[0])
+def decryptBook(bookId):
+	import xml.etree.ElementTree as ET
 
-	pvkString = """-----BEGIN RSA PRIVATE KEY-----
-MIICXAIBAAKBgQC2F3ZzZhR+dW1e9vM5fFUiMoK+P4nSClroDqkkuJg45o1jGRCE
-2P1ISaqRa4o5jTNnWZWjJdFxCHJN0kJgp3qIId5lDEAI1Cz2rUrwCeWDHrfXJalk
-ZQYHLO994mypg9K2XFnH3yN86Ec8uHftxWf3xqJPH1SGihcwrD1kYdAClQIDAQAB
-AoGAIxvK/t0Dvo4tlE3Q/5h1Ya6TftMJY7ITbQLGognlb7MkN6MxiCu+Sh3KAVfW
-wtnyu06Oh3JXO5ABWffcTH5+JUXwLs9bWsfl+lKhL5a7gUACJPfoq6/dCcqzuwPR
-/e2i+Gwuv4cDe+J8bxC99AeuPSFpiy8T8/KL/+3xW4S+VdECQQDghDH/dSvzCBnl
-LHF7yj+ik/ccWxy7AsjYsJ6UutcKDXtArC9o0hsbOi/cRsjxGIUh6C5Wp4uMJvAM
-PON8EoZLAkEAz6BISpSvmBz06zf5+mRcSuGQ5sAQ3xP8IETqVXQymDj+Lzmit+Xd
-1KmA9tU7FO7Vb6yAZYCXWGDYc5EglNOOnwJBAKet03GI3yQJXt2sDa14ZYJUo+/H
-lHOPJtW/QxCtYkEdxHmOn3HXyWrSUEBhlV2LBJNIRqNtSmmIAywApZ1acHUCQFSM
-sOOuKNOI9zPSV7nfpLXZpWhSToyJVuLNLaAe8XuLufcBQYIh2XQAksPxkV205LXV
-SXQMKZWT2pE1SE9S14ECQE1UGFqBQDUw1/won1Aa+iPXm3aivvz0hi5koaYdIIlO
-DmAJzqBEPUCfWf34g8MieR2FmP1eVGyPKax09awOJoE=
------END RSA PRIVATE KEY-----"""
+	#find encryption.xml
+	encryptonFilePath = 'META-INF/encryption.xml'
+	bookTopPath = os.path.join(epubPathDownload, bookId)
+	xmlTree = ET.parse(os.path.join(bookTopPath, encryptonFilePath))
+	root = xmlTree.getroot()
+	#get the cipher of encrypted key
+	mainEncryptedKey = root.find('{http://www.w3.org/2001/04/xmlenc#}EncryptedKey')
+	for child in mainEncryptedKey.iter('{http://www.w3.org/2001/04/xmlenc#}CipherValue'):
+		mainEncryptedKey = child.text
 
-	key = RSA.importKey(pvkString)
-	decryptedText = key.decrypt(encryptedTextBytes)
-	print decryptedText
+	#get all cipher ref of encrypted files
+	encryptedFilesReference = []
+	for child in root.iter('{http://www.w3.org/2001/04/xmlenc#}CipherReference'):
+		encryptedFilesReference.append(child.attrib['URI'])
 
-# files = getAllFiles()
-# checkAllFolderExist(files)
-DecryptBooks()
+	#decrypt aes key
+	aesKey = decryptAESKey(rsaPrivateKey, mainEncryptedKey)
 
-# import base64
-# encodeString = "SGVsbG8gQmFzZTY0ISEhISEhISEhIQ=="
-# decodeResult = base64.b64decode(encodeString)
-# print "base64 encode string: ", encodeString
-# print "correct result is: ", decodeResult, "(", len(decodeResult), ")"
+	decryptFiles(aesKey, bookId, encryptedFilesReference, "output")
+	print "checking other files..."
+	checkOtherFiles(bookId, "output")
+	outputDecryptedEpubFile(bookId, "output")
+	
+#check platform
+if sys.platform != 'darwin':
+	print 'not support for ', sys.platform, ". return."
+	sys.exit()
 
-# Base64Decoder(encodeString)
+#read db from readmoo
+conn = sqlite3.connect(dbPath)
+cursor = conn.execute('SELECT * FROM ItemTable')
+for row in cursor:
+	if row[0] == 'rsa_privateKey':
+		rsaPrivateKey = str(row[1]).decode('utf16')
+	elif row[0] == '-nw-library':
+		userBooksLibraryData = str(row[1]).decode('utf16')
+	elif row[0] == '-nw-access_token':
+		userToken = str(row[1]).decode('utf16')
+	elif row[0] == '-nw-userid':
+		userId = str(row[1]).decode('utf16')
+conn.close()
 
+epubPathDownload = os.path.join(downloadPath, userId)
 
+#parse book info
+io = StringIO(userBooksLibraryData)
+userBooksLibraryData = json.load(io)
+for item in userBooksLibraryData:
+	bookId = item['library_item']['book']['id']
+	title = item['library_item']['book']['title']
+	currentBooksInLibrary.update({bookId: title})
 
+allBooksId = currentBooksInLibrary.keys()
+if len(allBooksId) <= 0:
+	print 'there is no book to encrypt. finish.'
+	sys.exit()
+else:
+	print 'user id: ', userId
+	print 'all your books:'
+	#print books list
+	for index in range(0, len(allBooksId)):
+		bookId = allBooksId[index]
+		print '    #', index, currentBooksInLibrary[bookId], '(', bookId, ')' 
+	print ''
 
+	inputNumber = -1
+	while inputNumber < 0 or inputNumber >= len(allBooksId):
+		inputNumber = input('input the number to decrypt: ')
+	#process the book
+	choosedBookId = allBooksId[inputNumber]
+
+	downloadEpub(choosedBookId)
+	extractEpub(choosedBookId)
+	decryptBook(choosedBookId)
