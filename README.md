@@ -5,7 +5,7 @@ Mac os, windows is not supported.
 ## How To Use
 ```
 1. Install readmoo app (desktop version)
-2. Login your account
+2. Login your account on desktop app
 3. run the python script
 ```
 ## License
