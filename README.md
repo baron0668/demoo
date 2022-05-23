@@ -1,6 +1,7 @@
 # demoo
 ## UPDATE
 The decrypting of readmoo has been changed thoroughly, and this project is in deprecated.
+## Introduce
 Decrypt your epub files from Readmoo Library.
 ## Environment
 Mac os, windows is not supported.
